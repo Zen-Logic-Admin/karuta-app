@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { socket } from '../socket.js';
 import { getYomifuda, CARD_IDS } from '../cardData.js';
 
-// ベストな日本語音声を選ぶ（Edgeのニューラル音声 Nanami > Keita > オンライン > ローカルの順）
 function getBestJapaneseVoice() {
   const voices = window.speechSynthesis?.getVoices() || [];
   const ja = voices.filter((v) => v.lang === 'ja-JP' || v.lang === 'ja');
@@ -18,24 +17,34 @@ function getBestJapaneseVoice() {
   );
 }
 
+function getTitle(rankFromBottom, total) {
+  if (rankFromBottom === 0) return 'よそ者';
+  if (rankFromBottom === 1 && total > 2) return 'えせ妻沼人';
+  if (rankFromBottom === total - 1) return '妻沼かるた名人';
+  if (rankFromBottom === total - 2 && total > 3) return '妻沼かるた士';
+  return '妻沼町民';
+}
+
 export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   const [players, setPlayers] = useState(initialState.players);
   const [currentCard, setCurrentCard] = useState(null);
   const [claimed, setClaimed] = useState({});
-  const [lastClaim, setLastClaim] = useState(null);
   const [gameOver, setGameOver] = useState(false);
   const [roundActive, setRoundActive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
-  const [penalty, setPenalty] = useState(null); // { id } for flash
+  const [penalty, setPenalty] = useState(null);
   const [isHost, setIsHost] = useState(roomInfo.isHost);
   const [shuffledIds] = useState(() => [...CARD_IDS].sort(() => Math.random() - 0.5));
   const [voices, setVoices] = useState([]);
   const [selectedVoiceName, setSelectedVoiceName] = useState('');
+  const [revealedCount, setRevealedCount] = useState(0);
+  const [finalPlayers, setFinalPlayers] = useState([]);
+
   const currentCardRef = useRef(null);
+  const isHostRef = useRef(roomInfo.isHost);
   const myId = socket.id;
 
-  // 音声一覧が読み込まれたら最善を選択
   useEffect(() => {
     function loadVoices() {
       const all = window.speechSynthesis?.getVoices() || [];
@@ -62,12 +71,14 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     const voice = window.speechSynthesis.getVoices().find((v) => v.name === selectedVoiceName);
     if (voice) utt.voice = voice;
 
-    const interval = setInterval(() => {
+    const resumeInterval = setInterval(() => {
       if (window.speechSynthesis.speaking) window.speechSynthesis.resume();
     }, 8000);
+    const fallbackTimeout = setTimeout(() => setIsSpeaking(false), 30000);
+
     utt.onstart = () => setIsSpeaking(true);
-    utt.onend = () => { setIsSpeaking(false); clearInterval(interval); };
-    utt.onerror = () => { setIsSpeaking(false); clearInterval(interval); };
+    utt.onend = () => { setIsSpeaking(false); clearInterval(resumeInterval); clearTimeout(fallbackTimeout); };
+    utt.onerror = () => { setIsSpeaking(false); clearInterval(resumeInterval); clearTimeout(fallbackTimeout); };
 
     setIsSpeaking(true);
     window.speechSynthesis.speak(utt);
@@ -84,10 +95,12 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
       setCurrentCard(cardId);
       currentCardRef.current = cardId;
       setRoundActive(true);
-      setLastClaim(null);
       setPenalty(null);
-      const yomifuda = getYomifuda();
-      speak(yomifuda[cardId] || cardId);
+      // TTS はホストのみ（ホスト端末がかるた読み上げ機として機能）
+      if (isHostRef.current) {
+        const yomifuda = getYomifuda();
+        speak(yomifuda[cardId] || cardId);
+      }
     });
 
     socket.on('round:claimed', ({ winnerId, winnerName, cardId, players: p }) => {
@@ -96,7 +109,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
       setCurrentCard(null);
       currentCardRef.current = null;
       setPlayers(p);
-      setLastClaim({ winnerId, winnerName, cardId, isMe: winnerId === myId });
       setIsSpeaking(false);
       window.speechSynthesis?.cancel();
     });
@@ -105,7 +117,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
       setRoundActive(false);
       setCurrentCard(null);
       currentCardRef.current = null;
-      setLastClaim(null);
       setIsSpeaking(false);
       window.speechSynthesis?.cancel();
     });
@@ -119,6 +130,8 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     });
 
     socket.on('game:over', ({ players: p }) => {
+      const sorted = [...p].sort((a, b) => (b.score - (b.penalties || 0)) - (a.score - (a.penalties || 0)));
+      setFinalPlayers(sorted);
       setPlayers(p);
       setGameOver(true);
       setRoundActive(false);
@@ -128,7 +141,9 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
     socket.on('room:updated', ({ players: p }) => setPlayers(p));
     socket.on('host:changed', ({ hostId, players: p }) => {
-      setIsHost(socket.id === hostId);
+      const nowHost = socket.id === hostId;
+      isHostRef.current = nowHost;
+      setIsHost(nowHost);
       setPlayers(p);
     });
 
@@ -139,6 +154,19 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     };
   }, [speak, myId]);
 
+  // 結果発表: 下から順に1人ずつ表示
+  useEffect(() => {
+    if (!gameOver || finalPlayers.length === 0) return;
+    setRevealedCount(0);
+    let count = 0;
+    const timer = setInterval(() => {
+      count++;
+      setRevealedCount(count);
+      if (count >= finalPlayers.length) clearInterval(timer);
+    }, 1800);
+    return () => clearInterval(timer);
+  }, [gameOver, finalPlayers.length]);
+
   function tapCard(cardId) {
     if (claimed[cardId] || !roundActive) return;
     socket.emit('card:tap', { cardId });
@@ -146,6 +174,12 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
   function nextRound() {
     if (isSpeaking || roundActive) return;
+    // iOS音声制限解除: ユーザージェスチャー内でspeechSynthesisに触れる
+    if (window.speechSynthesis) {
+      const u = new SpeechSynthesisUtterance('');
+      window.speechSynthesis.speak(u);
+      window.speechSynthesis.cancel();
+    }
     socket.emit('round:next');
   }
 
@@ -153,36 +187,86 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     socket.emit('round:skip');
   }
 
+  function forceEndGame() {
+    if (window.confirm('ゲームを終了しますか？')) {
+      socket.emit('game:end');
+    }
+  }
+
   const sorted = [...players].sort((a, b) => (b.score - (b.penalties || 0)) - (a.score - (a.penalties || 0)));
   const claimedCount = Object.keys(claimed).length;
 
-  // ゲーム終了画面
+  // ゲーム終了画面（下から順に発表）
   if (gameOver) {
+    const sortedForReveal = [...finalPlayers].reverse(); // 最下位→最上位の順
+    const total = sortedForReveal.length;
+
     return (
-      <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20, padding: 24, background: 'linear-gradient(180deg, #8b0000 0%, #1a0a00 100%)' }}>
-        <div style={{ fontSize: 28, fontWeight: 'bold', color: '#ffd700', letterSpacing: 4 }}>ゲーム終了！</div>
-        <div style={{ width: '100%', maxWidth: 360 }}>
-          {sorted.map((p, i) => (
-            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: i === 0 ? 'rgba(255,215,0,0.2)' : 'rgba(255,255,255,0.08)', borderRadius: 10, marginBottom: 8 }}>
-              <span style={{ fontSize: 22 }}>{['🏆','🥈','🥉'][i] || `${i+1}.`}</span>
-              <span style={{ flex: 1, fontSize: 16 }}>{p.name}</span>
-              <span style={{ color: '#4ade80', fontWeight: 'bold' }}>{p.score}取</span>
-              {(p.penalties || 0) > 0 && <span style={{ color: '#f87171', fontSize: 14 }}>-{p.penalties}罰</span>}
-            </div>
-          ))}
+      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '32px 24px', background: 'linear-gradient(180deg, #0a0500 0%, #1a0a00 60%, #0a0000 100%)' }}>
+        <style>{`
+          @keyframes slideUp {
+            from { opacity: 0; transform: translateY(40px) scale(0.95); }
+            to   { opacity: 1; transform: translateY(0)   scale(1); }
+          }
+        `}</style>
+
+        <div style={{ fontSize: 22, fontWeight: 'bold', color: '#ffd700', letterSpacing: 4, marginBottom: 4 }}>
+          {revealedCount < total ? '結果発表' : '🎊 最終結果'}
         </div>
-        <button style={{ padding: '14px 40px', fontSize: 18, fontWeight: 'bold', borderRadius: 12, border: 'none', cursor: 'pointer', background: '#ffd700', color: '#1a0a00' }} onClick={onGameOver}>
-          トップに戻る
-        </button>
+
+        <div style={{ width: '100%', maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {sortedForReveal.slice(0, revealedCount).map((p, i) => {
+            const rankFromBottom = i;
+            const actualRank = total - i;
+            const isTop = actualRank === 1;
+            const isNew = i === revealedCount - 1;
+            const badge = actualRank === 1 ? '🏆' : actualRank === 2 ? '🥈' : actualRank === 3 ? '🥉' : `${actualRank}位`;
+            const title = getTitle(rankFromBottom, total);
+
+            return (
+              <div
+                key={p.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '14px 18px',
+                  background: isTop ? 'rgba(255,215,0,0.18)' : isNew ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+                  borderRadius: 12,
+                  border: isTop ? '1px solid rgba(255,215,0,0.5)' : '1px solid rgba(255,255,255,0.07)',
+                  animation: isNew ? 'slideUp 0.5s ease-out' : 'none',
+                }}
+              >
+                <div style={{ fontSize: isTop ? 28 : 20, minWidth: 36, textAlign: 'center' }}>{badge}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: isTop ? '#ffd700' : '#888', marginBottom: 2 }}>{title}</div>
+                  <div style={{ fontSize: 17, color: '#fff', fontWeight: isTop ? 'bold' : 'normal' }}>{p.name}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: '#4ade80', fontWeight: 'bold' }}>{p.score}取</div>
+                  {(p.penalties || 0) > 0 && <div style={{ color: '#f87171', fontSize: 12 }}>-{p.penalties}罰</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {revealedCount >= total && (
+          <button
+            style={{ marginTop: 12, padding: '14px 40px', fontSize: 18, fontWeight: 'bold', borderRadius: 12, border: 'none', cursor: 'pointer', background: '#ffd700', color: '#1a0a00' }}
+            onClick={onGameOver}
+          >
+            トップに戻る
+          </button>
+        )}
       </div>
     );
   }
 
   const hostBtnLabel = () => {
     if (isSpeaking) return '読み上げ中…';
-    if (roundActive) return null; // show re-read/skip instead
+    if (roundActive) return null;
     if (claimedCount === 0) return '▶ 最初の一枚を引く';
-    if (claimedCount === CARD_IDS.length) return 'ゲーム終了';
     return '▶ 次の札を引く';
   };
 
@@ -195,17 +279,10 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
         </div>
       )}
 
-      {/* 取った！トースト */}
-      {lastClaim && !roundActive && (
-        <div style={{ position: 'fixed', top: 48, left: '50%', transform: 'translateX(-50%)', background: lastClaim.isMe ? 'rgba(180,120,0,0.92)' : 'rgba(0,0,0,0.82)', color: '#fff', padding: '8px 22px', borderRadius: 20, fontSize: 16, fontWeight: 'bold', zIndex: 50, pointerEvents: 'none', whiteSpace: 'nowrap', backdropFilter: 'blur(6px)' }}>
-          {lastClaim.isMe ? '🎉 取った！' : `${lastClaim.winnerName} が取った！`}
-        </div>
-      )}
-
       {/* ヘッダー */}
       <div style={{ padding: '6px 10px', background: 'rgba(100,0,0,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
         <div style={{ fontSize: 13, color: '#ffd700', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-          {isSpeaking ? '🔊' : '残り'}{!isSpeaking && `${CARD_IDS.length - claimedCount}枚`}
+          {isSpeaking ? '🔊' : `残り${CARD_IDS.length - claimedCount}枚`}
         </div>
         <div style={{ flex: 1, display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap' }}>
           {sorted.map((p) => (
@@ -230,7 +307,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
         </div>
       </div>
 
-
       {/* 絵札グリッド */}
       <div style={{ flex: 1, overflowY: 'auto', padding: 5 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 3 }}>
@@ -239,7 +315,7 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
             return (
               <div
                 key={id}
-                onPointerDown={() => tapCard(id)}
+                onPointerUp={() => tapCard(id)}
                 style={{
                   aspectRatio: '3/4',
                   borderRadius: 5,
@@ -273,13 +349,21 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
       {isHost && (
         <div style={{ padding: '8px 12px', background: '#0a0500', flexShrink: 0, display: 'flex', gap: 8 }}>
           {!roundActive ? (
-            <button
-              onClick={nextRound}
-              disabled={isSpeaking}
-              style={{ flex: 1, padding: '13px', fontSize: 17, fontWeight: 'bold', borderRadius: 10, border: 'none', cursor: isSpeaking ? 'not-allowed' : 'pointer', background: isSpeaking ? '#333' : '#ffd700', color: isSpeaking ? '#888' : '#1a0a00' }}
-            >
-              {hostBtnLabel()}
-            </button>
+            <>
+              <button
+                onClick={nextRound}
+                disabled={isSpeaking}
+                style={{ flex: 1, padding: '13px', fontSize: 17, fontWeight: 'bold', borderRadius: 10, border: 'none', cursor: isSpeaking ? 'not-allowed' : 'pointer', background: isSpeaking ? '#333' : '#ffd700', color: isSpeaking ? '#888' : '#1a0a00' }}
+              >
+                {hostBtnLabel()}
+              </button>
+              <button
+                onClick={forceEndGame}
+                style={{ padding: '13px 14px', fontSize: 13, borderRadius: 10, border: '1px solid #444', background: 'transparent', color: '#666', cursor: 'pointer' }}
+              >
+                終了
+              </button>
+            </>
           ) : (
             <>
               <button

@@ -156,6 +156,13 @@ io.on('connection', (socket) => {
     io.to(room.code).emit('round:skipped', {});
   });
 
+  socket.on('game:end', () => {
+    const room = rooms.get(socket.roomCode);
+    if (!room || room.hostId !== socket.id) return;
+    room.state = 'over';
+    io.to(room.code).emit('game:over', { players: room.players });
+  });
+
   socket.on('disconnect', () => {
     const roomCode = socket.roomCode;
     if (!roomCode) return;
