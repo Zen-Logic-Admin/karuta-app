@@ -43,6 +43,7 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
   const currentCardRef = useRef(null);
   const isHostRef = useRef(roomInfo.isHost);
+  const pointerStartRef = useRef(null);
   const myId = socket.id;
 
   useEffect(() => {
@@ -315,7 +316,17 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
             return (
               <div
                 key={id}
-                onPointerUp={() => tapCard(id)}
+                onPointerDown={(e) => {
+                  pointerStartRef.current = { x: e.clientX, y: e.clientY };
+                }}
+                onPointerUp={(e) => {
+                  if (!pointerStartRef.current) return;
+                  const dx = Math.abs(e.clientX - pointerStartRef.current.x);
+                  const dy = Math.abs(e.clientY - pointerStartRef.current.y);
+                  pointerStartRef.current = null;
+                  if (dx < 10 && dy < 10) tapCard(id);
+                }}
+                onPointerCancel={() => { pointerStartRef.current = null; }}
                 style={{
                   aspectRatio: '3/4',
                   borderRadius: 5,
@@ -325,7 +336,7 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
                   opacity: isClaimed ? 0.2 : 1,
                   transition: 'opacity 0.4s',
                   border: '1px solid rgba(255,255,255,0.08)',
-                  touchAction: 'manipulation',
+                  touchAction: 'pan-y',
                 }}
               >
                 <img
