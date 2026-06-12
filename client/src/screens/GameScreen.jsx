@@ -25,9 +25,36 @@ function getTitle(rankFromBottom, total) {
   return '妻沼町民';
 }
 
+const CSS = `
+  @keyframes cardPulse {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255,215,0,0.15); }
+    50%       { box-shadow: 0 0 0 2px rgba(255,215,0,0.55), 0 0 10px rgba(255,150,0,0.25); }
+  }
+  @keyframes roundFlash {
+    0%   { opacity: 0.9; }
+    100% { opacity: 0; }
+  }
+  @keyframes claimedPop {
+    0%   { transform: scale(1);    filter: brightness(1); }
+    25%  { transform: scale(1.14); filter: brightness(2.8); }
+    65%  { transform: scale(1.06); filter: brightness(1.4); }
+    100% { transform: scale(1);    filter: brightness(1); }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(40px) scale(0.95); }
+    to   { opacity: 1; transform: translateY(0)   scale(1); }
+  }
+  @keyframes penaltyShake {
+    0%,100% { transform: translateX(0); }
+    20%     { transform: translateX(-6px); }
+    40%     { transform: translateX(6px); }
+    60%     { transform: translateX(-4px); }
+    80%     { transform: translateX(4px); }
+  }
+`;
+
 export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   const [players, setPlayers] = useState(initialState.players);
-  const [currentCard, setCurrentCard] = useState(null);
   const [claimed, setClaimed] = useState({});
   const [gameOver, setGameOver] = useState(false);
   const [roundActive, setRoundActive] = useState(false);
@@ -40,6 +67,9 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   const [selectedVoiceName, setSelectedVoiceName] = useState('');
   const [revealedCount, setRevealedCount] = useState(0);
   const [finalPlayers, setFinalPlayers] = useState([]);
+  const [roundFlash, setRoundFlash] = useState(false);
+  const [pressingCard, setPressingCard] = useState(null);
+  const [justClaimed, setJustClaimed] = useState(null);
 
   const currentCardRef = useRef(null);
   const isHostRef = useRef(roomInfo.isHost);
@@ -68,19 +98,15 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     utt.lang = 'ja-JP';
     utt.rate = 0.82;
     utt.pitch = 1.05;
-
     const voice = window.speechSynthesis.getVoices().find((v) => v.name === selectedVoiceName);
     if (voice) utt.voice = voice;
-
     const resumeInterval = setInterval(() => {
       if (window.speechSynthesis.speaking) window.speechSynthesis.resume();
     }, 8000);
     const fallbackTimeout = setTimeout(() => setIsSpeaking(false), 30000);
-
     utt.onstart = () => setIsSpeaking(true);
     utt.onend = () => { setIsSpeaking(false); clearInterval(resumeInterval); clearTimeout(fallbackTimeout); };
     utt.onerror = () => { setIsSpeaking(false); clearInterval(resumeInterval); clearTimeout(fallbackTimeout); };
-
     setIsSpeaking(true);
     window.speechSynthesis.speak(utt);
   }, [ttsEnabled, selectedVoiceName]);
@@ -93,21 +119,22 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
   useEffect(() => {
     socket.on('round:start', ({ cardId }) => {
-      setCurrentCard(cardId);
       currentCardRef.current = cardId;
       setRoundActive(true);
       setPenalty(null);
-      // TTS はホストのみ（ホスト端末がかるた読み上げ機として機能）
+      setRoundFlash(true);
+      setTimeout(() => setRoundFlash(false), 600);
       if (isHostRef.current) {
         const yomifuda = getYomifuda();
         speak(yomifuda[cardId] || cardId);
       }
     });
 
-    socket.on('round:claimed', ({ winnerId, winnerName, cardId, players: p }) => {
+    socket.on('round:claimed', ({ winnerName, cardId, players: p }) => {
+      setJustClaimed(cardId);
+      setTimeout(() => setJustClaimed(null), 900);
       setClaimed((prev) => ({ ...prev, [cardId]: winnerName }));
       setRoundActive(false);
-      setCurrentCard(null);
       currentCardRef.current = null;
       setPlayers(p);
       setIsSpeaking(false);
@@ -116,7 +143,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
     socket.on('round:skipped', () => {
       setRoundActive(false);
-      setCurrentCard(null);
       currentCardRef.current = null;
       setIsSpeaking(false);
       window.speechSynthesis?.cancel();
@@ -155,7 +181,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     };
   }, [speak, myId]);
 
-  // 結果発表: 下から順に1人ずつ表示
   useEffect(() => {
     if (!gameOver || finalPlayers.length === 0) return;
     setRevealedCount(0);
@@ -175,7 +200,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
   function nextRound() {
     if (isSpeaking || roundActive) return;
-    // iOS音声制限解除: ユーザージェスチャー内でspeechSynthesisに触れる
     if (window.speechSynthesis) {
       const u = new SpeechSynthesisUtterance('');
       window.speechSynthesis.speak(u);
@@ -184,37 +208,25 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     socket.emit('round:next');
   }
 
-  function skipRound() {
-    socket.emit('round:skip');
-  }
+  function skipRound() { socket.emit('round:skip'); }
 
   function forceEndGame() {
-    if (window.confirm('ゲームを終了しますか？')) {
-      socket.emit('game:end');
-    }
+    if (window.confirm('ゲームを終了しますか？')) socket.emit('game:end');
   }
 
   const sorted = [...players].sort((a, b) => (b.score - (b.penalties || 0)) - (a.score - (a.penalties || 0)));
   const claimedCount = Object.keys(claimed).length;
 
-  // ゲーム終了画面（下から順に発表）
+  // ── ゲーム終了画面 ──────────────────────────────────────────
   if (gameOver) {
-    const sortedForReveal = [...finalPlayers].reverse(); // 最下位→最上位の順
+    const sortedForReveal = [...finalPlayers].reverse();
     const total = sortedForReveal.length;
-
     return (
       <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '32px 24px', background: 'linear-gradient(180deg, #0a0500 0%, #1a0a00 60%, #0a0000 100%)' }}>
-        <style>{`
-          @keyframes slideUp {
-            from { opacity: 0; transform: translateY(40px) scale(0.95); }
-            to   { opacity: 1; transform: translateY(0)   scale(1); }
-          }
-        `}</style>
-
+        <style>{CSS}</style>
         <div style={{ fontSize: 22, fontWeight: 'bold', color: '#ffd700', letterSpacing: 4, marginBottom: 4 }}>
           {revealedCount < total ? '結果発表' : '🎊 最終結果'}
         </div>
-
         <div style={{ width: '100%', maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {sortedForReveal.slice(0, revealedCount).map((p, i) => {
             const rankFromBottom = i;
@@ -222,25 +234,18 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
             const isTop = actualRank === 1;
             const isNew = i === revealedCount - 1;
             const badge = actualRank === 1 ? '🏆' : actualRank === 2 ? '🥈' : actualRank === 3 ? '🥉' : `${actualRank}位`;
-            const title = getTitle(rankFromBottom, total);
-
             return (
-              <div
-                key={p.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '14px 18px',
-                  background: isTop ? 'rgba(255,215,0,0.18)' : isNew ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
-                  borderRadius: 12,
-                  border: isTop ? '1px solid rgba(255,215,0,0.5)' : '1px solid rgba(255,255,255,0.07)',
-                  animation: isNew ? 'slideUp 0.5s ease-out' : 'none',
-                }}
-              >
+              <div key={p.id} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '14px 18px',
+                background: isTop ? 'rgba(255,215,0,0.18)' : isNew ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+                borderRadius: 12,
+                border: isTop ? '1px solid rgba(255,215,0,0.5)' : '1px solid rgba(255,255,255,0.07)',
+                animation: isNew ? 'slideUp 0.5s ease-out' : 'none',
+              }}>
                 <div style={{ fontSize: isTop ? 28 : 20, minWidth: 36, textAlign: 'center' }}>{badge}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: isTop ? '#ffd700' : '#888', marginBottom: 2 }}>{title}</div>
+                  <div style={{ fontSize: 11, color: isTop ? '#ffd700' : '#888', marginBottom: 2 }}>{getTitle(rankFromBottom, total)}</div>
                   <div style={{ fontSize: 17, color: '#fff', fontWeight: isTop ? 'bold' : 'normal' }}>{p.name}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
@@ -251,7 +256,6 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
             );
           })}
         </div>
-
         {revealedCount >= total && (
           <button
             style={{ marginTop: 12, padding: '14px 40px', fontSize: 18, fontWeight: 'bold', borderRadius: 12, border: 'none', cursor: 'pointer', background: '#ffd700', color: '#1a0a00' }}
@@ -264,78 +268,144 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
     );
   }
 
-  const hostBtnLabel = () => {
-    if (isSpeaking) return '読み上げ中…';
-    if (roundActive) return null;
-    if (claimedCount === 0) return '▶ 最初の一枚を引く';
-    return '▶ 次の札を引く';
-  };
-
+  // ── メインゲーム画面 ────────────────────────────────────────
   return (
-    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: '#1a0a00', overflow: 'hidden' }}>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: '#0a0400', overflow: 'hidden', position: 'relative' }}>
+      <style>{CSS}</style>
+
+      {/* 背景画像 */}
+      <div style={{
+        position: 'absolute', inset: 0, zIndex: 0,
+        backgroundImage: 'url(/bg/bg0.jpg)',
+        backgroundSize: 'cover', backgroundPosition: 'center',
+        filter: 'brightness(0.18) saturate(0.5) sepia(0.4)',
+      }} />
+      <div style={{
+        position: 'absolute', inset: 0, zIndex: 0,
+        background: 'radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
+        pointerEvents: 'none',
+      }} />
+
+      {/* ラウンド開始フラッシュ */}
+      {roundFlash && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 200, pointerEvents: 'none',
+          background: 'radial-gradient(circle at center, rgba(255,220,80,0.88) 0%, rgba(255,90,0,0.35) 55%, transparent 80%)',
+          animation: 'roundFlash 0.55s ease-out forwards',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div style={{ fontSize: 88, fontWeight: 900, color: '#fff', textShadow: '0 0 50px rgba(255,200,0,1)', letterSpacing: 6, lineHeight: 1 }}>！</div>
+        </div>
+      )}
+
       {/* お手付きフラッシュ */}
       {penalty && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(220,30,30,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, pointerEvents: 'none' }}>
-          <div style={{ fontSize: 48, fontWeight: 'bold', color: '#fff', textShadow: '0 2px 12px rgba(0,0,0,0.8)' }}>お手付き！</div>
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none',
+          background: 'rgba(200,15,15,0.62)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div style={{ fontSize: 54, fontWeight: 'bold', color: '#fff', textShadow: '0 2px 24px rgba(0,0,0,0.9)', animation: 'penaltyShake 0.5s ease-out' }}>
+            お手付き！
+          </div>
         </div>
       )}
 
       {/* ヘッダー */}
-      <div style={{ padding: '6px 10px', background: 'rgba(100,0,0,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-        <div style={{ fontSize: 13, color: '#ffd700', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-          {isSpeaking ? '🔊' : `残り${CARD_IDS.length - claimedCount}枚`}
+      <div style={{
+        padding: '7px 10px',
+        background: 'rgba(0,0,0,0.72)',
+        backdropFilter: 'blur(10px)',
+        borderBottom: roundActive ? '1px solid rgba(255,215,0,0.4)' : '1px solid rgba(255,255,255,0.06)',
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+        position: 'relative', zIndex: 10,
+        transition: 'border-color 0.4s',
+      }}>
+        <div style={{
+          fontSize: 12, fontWeight: 'bold', whiteSpace: 'nowrap', minWidth: 54,
+          color: isSpeaking ? '#ff9500' : roundActive ? '#ffd700' : '#666',
+          transition: 'color 0.3s',
+        }}>
+          {isSpeaking ? '🔊 読中' : roundActive ? '⚡ 探せ！' : `残 ${CARD_IDS.length - claimedCount}`}
         </div>
-        <div style={{ flex: 1, display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap' }}>
-          {sorted.map((p) => (
-            <span key={p.id} style={{ fontSize: 11, color: p.id === myId ? '#ffd700' : '#ddd', background: 'rgba(255,255,255,0.12)', padding: '2px 7px', borderRadius: 10 }}>
-              {p.name} {p.score}{(p.penalties || 0) > 0 ? <span style={{ color: '#f87171' }}> -{p.penalties}</span> : ''}
+
+        <div style={{ flex: 1, display: 'flex', gap: 3, justifyContent: 'center', flexWrap: 'wrap' }}>
+          {sorted.map((p, i) => (
+            <span key={p.id} style={{
+              fontSize: 11,
+              color: p.id === myId ? '#ffd700' : '#bbb',
+              background: p.id === myId ? 'rgba(255,215,0,0.15)' : 'rgba(255,255,255,0.07)',
+              padding: '2px 7px', borderRadius: 10,
+              border: p.id === myId ? '1px solid rgba(255,215,0,0.3)' : '1px solid transparent',
+            }}>
+              {i === 0 ? '👑' : ''}{p.name} {p.score}
+              {(p.penalties || 0) > 0 && <span style={{ color: '#f87171', fontSize: 10 }}> -{p.penalties}</span>}
             </span>
           ))}
         </div>
+
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {voices.length > 1 && (
             <select
               value={selectedVoiceName}
               onChange={(e) => setSelectedVoiceName(e.target.value)}
-              style={{ fontSize: 10, background: 'rgba(0,0,0,0.6)', color: '#ffd700', border: '1px solid rgba(255,215,0,0.5)', borderRadius: 4, padding: '2px 4px', maxWidth: 90 }}
+              style={{ fontSize: 10, background: 'rgba(0,0,0,0.75)', color: '#ffd700', border: '1px solid rgba(255,215,0,0.35)', borderRadius: 4, padding: '2px 4px', maxWidth: 80 }}
             >
               {voices.map((v) => <option key={v.name} value={v.name}>{v.name.replace(/ \(.*\)/, '')}</option>)}
             </select>
           )}
-          <button onClick={() => setTtsEnabled((v) => !v)} style={{ fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', color: ttsEnabled ? '#ffd700' : '#555' }}>
+          <button onClick={() => setTtsEnabled((v) => !v)} style={{ fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', color: ttsEnabled ? '#ffd700' : '#333' }}>
             {ttsEnabled ? '🔊' : '🔇'}
           </button>
         </div>
       </div>
 
       {/* 絵札グリッド */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 5 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 5, position: 'relative', zIndex: 1 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 3 }}>
           {shuffledIds.map((id) => {
             const isClaimed = !!claimed[id];
+            const isBeingClaimed = justClaimed === id;
+            const isPressing = pressingCard === id;
+
             return (
               <div
                 key={id}
                 onPointerDown={(e) => {
                   pointerStartRef.current = { x: e.clientX, y: e.clientY };
+                  if (!isClaimed && roundActive) setPressingCard(id);
                 }}
                 onPointerUp={(e) => {
+                  setPressingCard(null);
                   if (!pointerStartRef.current) return;
                   const dx = Math.abs(e.clientX - pointerStartRef.current.x);
                   const dy = Math.abs(e.clientY - pointerStartRef.current.y);
                   pointerStartRef.current = null;
                   if (dx < 10 && dy < 10) tapCard(id);
                 }}
-                onPointerCancel={() => { pointerStartRef.current = null; }}
+                onPointerCancel={() => {
+                  setPressingCard(null);
+                  pointerStartRef.current = null;
+                }}
                 style={{
                   aspectRatio: '3/4',
-                  borderRadius: 5,
+                  borderRadius: 6,
                   overflow: 'hidden',
                   position: 'relative',
                   cursor: isClaimed ? 'default' : roundActive ? 'pointer' : 'default',
-                  opacity: isClaimed ? 0.2 : 1,
-                  transition: 'opacity 0.4s',
-                  border: '1px solid rgba(255,255,255,0.08)',
+                  opacity: isBeingClaimed ? 1 : (isClaimed ? 0.14 : 1),
+                  transform: isPressing ? 'scale(0.88)' : 'scale(1)',
+                  transition: isPressing
+                    ? 'transform 0.06s'
+                    : isBeingClaimed
+                      ? 'none'
+                      : 'transform 0.18s, opacity 0.55s',
+                  animation: isBeingClaimed
+                    ? 'claimedPop 0.7s ease-out forwards'
+                    : (roundActive && !isClaimed ? 'cardPulse 2.2s ease-in-out infinite' : 'none'),
+                  border: roundActive && !isClaimed
+                    ? '1px solid rgba(255,215,0,0.28)'
+                    : '1px solid rgba(255,255,255,0.05)',
                   touchAction: 'pan-y',
                 }}
               >
@@ -345,9 +415,9 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
                   style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
                   draggable={false}
                 />
-                {isClaimed && (
+                {isClaimed && !isBeingClaimed && (
                   <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <span style={{ fontSize: 9, color: '#ffd700', textAlign: 'center', padding: '0 2px' }}>{claimed[id]}</span>
+                    <span style={{ fontSize: 8, color: '#ffd700', textAlign: 'center', padding: '0 2px', fontWeight: 'bold' }}>{claimed[id]}</span>
                   </div>
                 )}
               </div>
@@ -358,19 +428,40 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
 
       {/* ホスト操作ボタン */}
       {isHost && (
-        <div style={{ padding: '8px 12px', background: '#0a0500', flexShrink: 0, display: 'flex', gap: 8 }}>
+        <div style={{
+          padding: '8px 12px',
+          background: 'rgba(0,0,0,0.82)',
+          backdropFilter: 'blur(10px)',
+          borderTop: '1px solid rgba(255,255,255,0.07)',
+          flexShrink: 0, display: 'flex', gap: 8,
+          position: 'relative', zIndex: 10,
+        }}>
           {!roundActive ? (
             <>
               <button
                 onClick={nextRound}
                 disabled={isSpeaking}
-                style={{ flex: 1, padding: '13px', fontSize: 17, fontWeight: 'bold', borderRadius: 10, border: 'none', cursor: isSpeaking ? 'not-allowed' : 'pointer', background: isSpeaking ? '#333' : '#ffd700', color: isSpeaking ? '#888' : '#1a0a00' }}
+                style={{
+                  flex: 1, padding: '14px', fontSize: 16, fontWeight: 'bold',
+                  borderRadius: 12, border: 'none',
+                  cursor: isSpeaking ? 'not-allowed' : 'pointer',
+                  background: isSpeaking ? '#202020' : 'linear-gradient(135deg, #ffd700 0%, #ff8800 100%)',
+                  color: isSpeaking ? '#444' : '#1a0800',
+                  boxShadow: isSpeaking ? 'none' : '0 4px 18px rgba(255,130,0,0.5)',
+                  transition: 'all 0.2s',
+                }}
               >
-                {hostBtnLabel()}
+                {isSpeaking ? '🔊 読み上げ中…' : claimedCount === 0 ? '▶ 最初の一枚を引く' : '▶ 次の札を引く'}
               </button>
               <button
                 onClick={forceEndGame}
-                style={{ padding: '13px 14px', fontSize: 13, borderRadius: 10, border: '1px solid #444', background: 'transparent', color: '#666', cursor: 'pointer' }}
+                style={{
+                  padding: '14px', fontSize: 12,
+                  borderRadius: 12,
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'rgba(255,255,255,0.04)',
+                  color: '#555', cursor: 'pointer',
+                }}
               >
                 終了
               </button>
@@ -380,14 +471,29 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
               <button
                 onClick={reSpeak}
                 disabled={isSpeaking}
-                style={{ flex: 1, padding: '13px', fontSize: 15, fontWeight: 'bold', borderRadius: 10, border: '2px solid #ffd700', background: 'transparent', color: isSpeaking ? '#555' : '#ffd700', cursor: isSpeaking ? 'not-allowed' : 'pointer' }}
+                style={{
+                  flex: 1, padding: '14px', fontSize: 15, fontWeight: 'bold',
+                  borderRadius: 12,
+                  border: isSpeaking ? '2px solid rgba(255,215,0,0.15)' : '2px solid rgba(255,215,0,0.65)',
+                  background: isSpeaking ? 'transparent' : 'rgba(255,215,0,0.07)',
+                  color: isSpeaking ? '#3a3a3a' : '#ffd700',
+                  cursor: isSpeaking ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s',
+                }}
               >
-                {isSpeaking ? '読み上げ中…' : '🔁 もう一度'}
+                {isSpeaking ? '🔊 読み上げ中…' : '🔁 もう一度'}
               </button>
               <button
                 onClick={skipRound}
                 disabled={isSpeaking}
-                style={{ padding: '13px 20px', fontSize: 15, borderRadius: 10, border: '1px solid #555', background: 'transparent', color: '#888', cursor: isSpeaking ? 'not-allowed' : 'pointer' }}
+                style={{
+                  padding: '14px 20px', fontSize: 15,
+                  borderRadius: 12,
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  background: 'rgba(255,255,255,0.04)',
+                  color: '#777',
+                  cursor: isSpeaking ? 'not-allowed' : 'pointer',
+                }}
               >
                 ⏭ スキップ
               </button>
