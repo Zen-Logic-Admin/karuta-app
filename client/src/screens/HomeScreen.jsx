@@ -10,6 +10,14 @@ const s = {
   btnPrimary: { background: '#ffd700', color: '#1a0a00' },
   btnSecondary: { background: 'rgba(0,0,0,0.4)', color: '#ffd700', border: '2px solid rgba(255,215,0,0.6)', backdropFilter: 'blur(4px)' },
   divider: { color: 'rgba(255,204,136,0.8)', fontSize: 14 },
+  modeCard: {
+    width: '100%', maxWidth: 320, padding: '16px 18px', borderRadius: 14,
+    cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 14,
+    backdropFilter: 'blur(4px)',
+  },
+  modeIcon: { fontSize: 30, flexShrink: 0 },
+  modeTitle: { fontSize: 17, fontWeight: 'bold', marginBottom: 2 },
+  modeDesc: { fontSize: 12, opacity: 0.8 },
   codeInput: { width: '100%', maxWidth: 320, padding: '12px 16px', fontSize: 28, borderRadius: 10, border: '2px solid rgba(255,215,0,0.7)', background: 'rgba(0,0,0,0.5)', color: '#fff', outline: 'none', textAlign: 'center', letterSpacing: 10, fontWeight: 'bold', backdropFilter: 'blur(4px)' },
 };
 
@@ -38,9 +46,26 @@ export default function HomeScreen() {
         {!mode && (
           <>
             <input style={s.input} placeholder="あなたの名前" value={name} onChange={(e) => setName(e.target.value)} maxLength={10} />
-            <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setMode('create')}>部屋を作る（ホスト）</button>
-            <div style={s.divider}>― または ―</div>
-            <button style={{ ...s.btn, ...s.btnSecondary }} onClick={() => setMode('join')}>部屋に参加する</button>
+            <button
+              style={{ ...s.modeCard, background: '#ffd700', border: 'none' }}
+              onClick={() => setMode('create')}
+            >
+              <span style={s.modeIcon}>👑</span>
+              <span>
+                <div style={{ ...s.modeTitle, color: '#1a0a00' }}>部屋を作る</div>
+                <div style={{ ...s.modeDesc, color: '#5a4000' }}>ホストになってQRコードでみんなを招待</div>
+              </span>
+            </button>
+            <button
+              style={{ ...s.modeCard, background: 'rgba(0,0,0,0.45)', border: '2px solid rgba(255,215,0,0.6)' }}
+              onClick={() => setMode('join')}
+            >
+              <span style={s.modeIcon}>🎴</span>
+              <span>
+                <div style={{ ...s.modeTitle, color: '#ffd700' }}>部屋に参加</div>
+                <div style={{ ...s.modeDesc, color: 'rgba(255,204,136,0.9)' }}>ホストから聞いた4桁コードを入力</div>
+              </span>
+            </button>
           </>
         )}
 

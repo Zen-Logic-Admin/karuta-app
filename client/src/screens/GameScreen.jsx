@@ -51,7 +51,51 @@ const CSS = `
     60%     { transform: translateX(-4px); }
     80%     { transform: translateX(4px); }
   }
+  @keyframes claimToast {
+    0%   { opacity: 0; transform: translateY(-24px) scale(0.7); }
+    12%  { opacity: 1; transform: translateY(0) scale(1.08); }
+    20%  { transform: translateY(0) scale(1); }
+    80%  { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-12px) scale(0.9); }
+  }
+  @keyframes confettiFall {
+    0%   { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(110vh) rotate(720deg); opacity: 0.7; }
+  }
+  @keyframes championIn {
+    0%   { opacity: 0; transform: scale(0.6); }
+    60%  { opacity: 1; transform: scale(1.06); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+  @keyframes crownBounce {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-10px); }
+  }
 `;
+
+const CONFETTI_COLORS = ['#ffd700', '#ff8800', '#ff4d6d', '#4ade80', '#60a5fa', '#fff'];
+
+function Confetti({ count = 60 }) {
+  const pieces = Array.from({ length: count }, (_, i) => ({
+    left: (i * 137.5) % 100,
+    delay: (i % 20) * 0.15,
+    duration: 2.6 + (i % 7) * 0.35,
+    color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+    size: 6 + (i % 3) * 3,
+  }));
+  return (
+    <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 300, overflow: 'hidden' }}>
+      {pieces.map((p, i) => (
+        <div key={i} style={{
+          position: 'absolute', top: 0, left: `${p.left}%`,
+          width: p.size, height: p.size * 1.6,
+          background: p.color, borderRadius: 2,
+          animation: `confettiFall ${p.duration}s linear ${p.delay}s infinite`,
+        }} />
+      ))}
+    </div>
+  );
+}
 
 export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   const [players, setPlayers] = useState(initialState.players);
@@ -70,6 +114,8 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   const [roundFlash, setRoundFlash] = useState(false);
   const [pressingCard, setPressingCard] = useState(null);
   const [justClaimed, setJustClaimed] = useState(null);
+  const [claimToast, setClaimToast] = useState(null);
+  const [championSeen, setChampionSeen] = useState(false);
 
   const currentCardRef = useRef(null);
   const isHostRef = useRef(roomInfo.isHost);
@@ -130,10 +176,12 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
       }
     });
 
-    socket.on('round:claimed', ({ winnerName, cardId, players: p }) => {
+    socket.on('round:claimed', ({ winnerId, winnerName, cardId, players: p }) => {
       setJustClaimed(cardId);
       setTimeout(() => setJustClaimed(null), 900);
       setClaimed((prev) => ({ ...prev, [cardId]: winnerName }));
+      setClaimToast({ name: winnerName, self: winnerId === socket.id, key: Date.now() });
+      setTimeout(() => setClaimToast(null), 1800);
       setRoundActive(false);
       currentCardRef.current = null;
       setPlayers(p);
@@ -221,9 +269,45 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
   if (gameOver) {
     const sortedForReveal = [...finalPlayers].reverse();
     const total = sortedForReveal.length;
+    const champion = finalPlayers[0];
+    const allRevealed = revealedCount >= total;
+
+    // 1位確定の瞬間: 紙吹雪 + 称号カードを全画面でドーン
+    if (allRevealed && !championSeen && champion) {
+      return (
+        <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: '32px 24px', background: 'linear-gradient(180deg, #0a0500 0%, #1a0a00 60%, #0a0000 100%)' }}>
+          <style>{CSS}</style>
+          <Confetti />
+          <div style={{ animation: 'championIn 0.7s ease-out', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, width: '100%', maxWidth: 340 }}>
+            <div style={{ fontSize: 64, animation: 'crownBounce 1.6s ease-in-out infinite' }}>👑</div>
+            <div style={{
+              width: '100%', padding: '32px 24px', borderRadius: 20, textAlign: 'center',
+              background: 'linear-gradient(160deg, rgba(255,215,0,0.22) 0%, rgba(120,70,0,0.25) 100%)',
+              border: '2px solid rgba(255,215,0,0.75)',
+              boxShadow: '0 0 60px rgba(255,180,0,0.35), inset 0 0 30px rgba(255,215,0,0.08)',
+            }}>
+              <div style={{ fontSize: 15, color: '#ffcc66', letterSpacing: 4, marginBottom: 10 }}>妻沼かるた名人</div>
+              <div style={{ fontSize: 38, fontWeight: 900, color: '#ffd700', textShadow: '0 0 24px rgba(255,200,0,0.8)', marginBottom: 10, wordBreak: 'break-all' }}>{champion.name}</div>
+              <div style={{ fontSize: 17, color: '#fff' }}>
+                {champion.score}枚獲得
+                {(champion.penalties || 0) > 0 && <span style={{ color: '#f87171', fontSize: 14 }}>（-{champion.penalties}罰）</span>}
+              </div>
+            </div>
+            <button
+              style={{ marginTop: 8, padding: '13px 36px', fontSize: 16, fontWeight: 'bold', borderRadius: 12, border: '1px solid rgba(255,215,0,0.5)', cursor: 'pointer', background: 'rgba(0,0,0,0.4)', color: '#ffd700' }}
+              onClick={() => setChampionSeen(true)}
+            >
+              結果一覧を見る →
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '32px 24px', background: 'linear-gradient(180deg, #0a0500 0%, #1a0a00 60%, #0a0000 100%)' }}>
         <style>{CSS}</style>
+        {allRevealed && <Confetti count={30} />}
         <div style={{ fontSize: 22, fontWeight: 'bold', color: '#ffd700', letterSpacing: 4, marginBottom: 4 }}>
           {revealedCount < total ? '結果発表' : '🎊 最終結果'}
         </div>
@@ -298,6 +382,29 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
         </div>
       )}
 
+      {/* 取った！トースト（全員に表示） */}
+      {claimToast && (
+        <div key={claimToast.key} style={{
+          position: 'fixed', top: 54, left: 0, right: 0, zIndex: 250,
+          display: 'flex', justifyContent: 'center', pointerEvents: 'none',
+        }}>
+          <div style={{
+            padding: '12px 26px', borderRadius: 30,
+            background: claimToast.self
+              ? 'linear-gradient(135deg, #ffd700 0%, #ff8800 100%)'
+              : 'rgba(0,0,0,0.85)',
+            border: claimToast.self ? 'none' : '1px solid rgba(255,215,0,0.55)',
+            color: claimToast.self ? '#1a0800' : '#ffd700',
+            fontSize: 19, fontWeight: 900,
+            boxShadow: '0 6px 30px rgba(255,150,0,0.45)',
+            animation: 'claimToast 1.8s ease-out forwards',
+            whiteSpace: 'nowrap',
+          }}>
+            {claimToast.self ? '🎯 あなたが取った！ +1' : `🎯 ${claimToast.name} が取った！`}
+          </div>
+        </div>
+      )}
+
       {/* お手付きフラッシュ */}
       {penalty && (
         <div style={{
@@ -338,7 +445,7 @@ export default function GameScreen({ roomInfo, initialState, onGameOver }) {
               padding: '2px 7px', borderRadius: 10,
               border: p.id === myId ? '1px solid rgba(255,215,0,0.3)' : '1px solid transparent',
             }}>
-              {i === 0 ? '👑' : ''}{p.name} {p.score}
+              {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : ''}{p.name} {p.score}
               {(p.penalties || 0) > 0 && <span style={{ color: '#f87171', fontSize: 10 }}> -{p.penalties}</span>}
             </span>
           ))}
